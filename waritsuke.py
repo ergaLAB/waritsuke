@@ -1,74 +1,89 @@
-from pypdf import PdfReader, PdfWriter, PageObject
 import math
+from pypdf import PageObject, PdfReader, PdfWriter
 
-def generate_imposition_pdf(input_path, output_path):
-    reader = PdfReader(input_path)
-    total_pages = len(reader.pages)
-    
-    # 8の倍数になるよう総ページ数を切り上げ
-    padded_total = math.ceil(total_pages / 8) * 8
-    
+
+def make_booklet_a3(input_pdf_path, output_pdf_path):
+    reader = PdfReader(input_pdf_path)
     writer = PdfWriter()
-    
-    # 1枚のA3（8ページ分）を繰り返し作成
-    # sheet_idx: 0, 1, 2... (シート単位)
-    num_sheets = padded_total // 8
-    
-    for s in range(num_sheets):
-        # 該当シートの8つのページ番号を計算 (1-indexed)
-        # 上段：外側と内側を巻き込む中綴じ折り
-        # 下段：もう1セットの中綴じ折り
-        p1 = 8 * s + 8
-        p2 = 8 * s + 1
-        p3 = 8 * s + 3
-        p4 = 8 * s + 6
-        
-        p5 = 8 * s + 2
-        p6 = 8 * s + 7
-        p7 = 8 * s + 4
-        p8 = 8 * s + 5
-        
-        page_map_front = [p1, p2, p3, p4] # [左上, 右上, 左下, 右下]
-        page_map_back  = [p5, p6, p7, p8] # [左上, 右上, 左下, 右下]
 
-        # 表面と裏面を作成
-        for page_map in [page_map_front, page_map_back]:
-            # A5サイズ基準 (Pt単位: 420 x 595 pt 前後)
-            # 最初の有効ページからサイズを取得、無ければデフォルト(A5)
-            sample_page = reader.pages[0]
-            a5_w = float(sample_page.mediabox.width)
-            a5_h = float(sample_page.mediabox.height)
-            
-            # A3キャンバス（横長：A5幅×2、A5高さ×2）を作成
-            a3_w = a5_w * 2
-            a3_h = a5_h * 2
-            a3_page = PageObject.create_blank_page(width=a3_w, height=a3_h)
-            
-            # 4領域の配置座標 (x, y) - 左下が原点
-            # 左上: (0, a5_h),  右上: (a5_w, a5_h)
-            # 左下: (0, 0),     右下: (a5_w, 0)
-            positions = [
-                (0, a5_h),       # 左上
-                (a5_w, a5_h),    # 右上
-                (0, 0),          # 左下
-                (a5_w, 0)        # 右下
-            ]
-            
-            for p_num, (x, y) in zip(page_map, positions):
-                if p_num <= total_pages:
-                    # 元のページをコピーして配置
-                    src_page = reader.pages[p_num - 1]
-                    a3_page.merge_translated_page(src_page, tx=x, ty=y)
-                # p_num > total_pages の場合は白紙（何もしない）
-            
-            writer.add_page(a3_page)
+    # 元のページのサイズ（A5）を取得
+    first_page = reader.pages[0]
+    a5_width = float(first_page.mediabox.width)
+    a5_height = float(first_page.mediabox.height)
 
-    with open(output_path, "wb") as f_out:
-        writer.write(f_out)
+    # 出力するA3（2×2配置）のサイズ設定
+    a3_width = a5_width * 2
+    a3_height = a5_height * 2
 
-    print(f"完了: '{output_path}' に保存されました。（総A3面数: {num_sheets * 2}面）")
+    num_original_pages = len(reader.pages)
+    # 8の倍数に切り上げ（不足分は空白ページ）
+    num_sheets = math.ceil(num_original_pages / 8)
+    total_pages = num_sheets * 8
 
-# 実行例
+    # ページ取得用のヘルパー関数（1ベースのページ番号から0ベースのPageObjectを取得）
+    def get_page_obj(p_num):
+        if p_num <= num_original_pages:
+            return reader.pages[p_num - 1]
+        else:
+            # 元のページ範囲を超える場合は空白ページを作成
+            return PageObject.create_blank_page(
+                width=a5_width, height=a5_height
+            )
+
+    # A3ページ上の 2x2 位置にページを配置する関数
+    # pos: "top_left", "top_right", "bottom_left", "bottom_right"
+    def place_page(target_a3_page, source_page, pos):
+        x_offset = 0 if "left" in pos else a5_width
+        y_offset = a5_height if "top" in pos else 0
+        target_a3_page.merge_translated_page(source_page, x_offset, y_offset)
+
+    # 用紙（Sheet）ごとに表裏を生成
+    for i in range(1, num_sheets + 1):
+        N = num_sheets
+
+        # --- 各位置のページ番号を計算（1ベース） ---
+        # 表面
+        front_tl = 8 * N - 2 * (i - 1)
+        front_tr = 2 * i - 1
+        front_bl = 4 * N - 2 * (i - 1) - 1
+        front_br = 4 * N + 2 * i
+
+        # 裏面
+        back_tl = 2 * i
+        back_tr = 8 * N - 2 * (i - 1) - 1
+        back_bl = 4 * N + 2 * i - 1
+        back_br = 4 * N - 2 * (i - 1)
+
+        # --- 表面（Front）の作成 ---
+        sheet_front = PageObject.create_blank_page(
+            width=a3_width, height=a3_height
+        )
+        place_page(sheet_front, get_page_obj(front_tl), "top_left")
+        place_page(sheet_front, get_page_obj(front_tr), "top_right")
+        place_page(sheet_front, get_page_obj(front_bl), "bottom_left")
+        place_page(sheet_front, get_page_obj(front_br), "bottom_right")
+        writer.add_page(sheet_front)
+
+        # --- 裏面（Back）の作成 ---
+        sheet_back = PageObject.create_blank_page(
+            width=a3_width, height=a3_height
+        )
+        place_page(sheet_back, get_page_obj(back_tl), "top_left")
+        place_page(sheet_back, get_page_obj(back_tr), "top_right")
+        place_page(sheet_back, get_page_obj(back_bl), "bottom_left")
+        place_page(sheet_back, get_page_obj(back_br), "bottom_right")
+        writer.add_page(sheet_back)
+
+    # ファイルへ書き出し
+    with open(output_pdf_path, "wb") as f:
+        writer.write(f)
+
+    print(f"変換が完了しました: {output_pdf_path}")
+    print(
+        f"総ページ数: {num_original_pages} -> A3用紙 {num_sheets} 枚（両面刷り）"
+    )
+
+
+# --- 実行 ---
 if __name__ == "__main__":
-    # 入力ファイル名と出力ファイル名を指定
-    generate_imposition_pdf("input_a5.pdf", "output_a3_imposed.pdf")
+    make_booklet_a3("input.pdf", "output_a3_booklet.pdf")
